@@ -13,121 +13,128 @@
 #
 # What is the sum of the sector IDs of the real rooms?
 
+# gcc -O0 -no-pie -Wall -nostdlib
+
+.equ EC_SUCCESS, 0
+.equ EC_NUMBER_READ, EC_SUCCESS + 1
+.equ EC_CHALLENGE_ARGS, EC_NUMBER_READ + 1
+.equ EC_CHALLENGE_CHEKCSUM_VERIFY, EC_CHALLENGE_ARGS + 1
+
 .equ SYS_WRITE, 4
-.equ STDOUT, 1
+.equ SYS_STDOUT, 1
+
 .equ CHAR_0, '0'
 .equ CHAR_9, '9'
+.equ CHAR_EOF, 0
+.equ CHAR_MINUS, '-'
+.equ CHAR_NEWLINE, '\n'
+.equ CHAR_SPACE, ' '
 .equ CHAR_A, 'a'
 .equ CHAR_Z, 'z'
 .equ CHAR_DASH, '-'
-.equ CHAR_NEWLINE, '\n'
-.equ CHAR_SPACE, ' '
 .equ CHAR_BRACKET_OPEN, '['
 .equ CHAR_BRACKET_CLOSE, ']'
 .equ CHECKSUM_LENGTH, 5
 
 .bss
-.lcomm num, 12 # buffer to hold number to print, 'write' syscall refuse a data stack pointer
-.lcomm debug_buffer, 4096 # buffer to hold number to print, 'write' syscall refuse a data stack pointer
+.lcomm num, 18 # buffer to hold number to print, 'write' syscall refuse a data stack pointer
 
 .text
 
-exit_error:
-    mov     $-1, %rdi
-    call    exit_unset
-
-exit_unset:
+u_exit_ec:
     mov     %rdi, %rbx
-    movl    $1, %eax
+    movq    $1, %rax
     int     $0x80
 
-string_len:
+u_string_leng:
     mov     $0, %rax
-.string_len_loop:
-    cmpb    $0, (%rdi)
-    je      .string_len_end
-    inc     %rax
+.u_string_leng_loop:
+    cmpb    $CHAR_EOF, (%rdi)
+    je      .u_string_leng_end
+    incq    %rax
     incq    %rdi
-    jmp     .string_len_loop
-.string_len_end:
+    jmp     .u_string_leng_loop
+.u_string_leng_end:
     ret
 
-stdout:
+u_stdout:
     push    %rdi
-    call    string_len
+    call    u_string_leng
     pop     %rdi
     mov     %rax, %rdx # length to write
     mov     $SYS_WRITE, %rax
-    mov     $STDOUT, %rbx
+    mov     $SYS_STDOUT, %rbx
     mov     %rdi, %rcx
     int     $0x80
     ret
 
-number_print_u32:
-    mov     $num, %r9 # buffer pointer
+u_number_print_s64:
+    movq    $num, %r9 # buffer pointer
+    movb    $CHAR_0, (%r9)
+    cmp     $0, %rdi
+    jge     .u_number_print_s64_unsigned
+    movb    $CHAR_MINUS, (%r9) # set digit
+    neg     %rdi
+.u_number_print_s64_unsigned:
+    inc     %r9
     movq    %rdi, %r10 # value to divide
-    mov     $100000000, %r11 # dividend
-    mov     $9, %r12 # loop 9 times
-.number_print_u32_loop:
-    mov     %r10, %rax
-    mov     %r11, %rcx
-    mov     $0, %rdx
+    movq    $1000000000000000, %r11 # divisor
+    movq    $16, %r12 # loop 9 times
+.u_number_print_s64_loop:
+    movq    %r10, %rax
+    movq    %r11, %rcx
+    movq    $0, %rdx
     div     %rcx
-    mov     %rdx, %r10
+    movq    %rdx, %r10
     add     $CHAR_0, %rax
     movb    %al, (%r9) # set digit
     inc     %r9
-    # remove one 0 from dividend
-    mov     %r11, %rax
-    mov     $10, %rcx
-    mov     $0, %rdx
+    # remove one 0 from divisor
+    movq    %r11, %rax
+    movq    $10, %rcx
+    movq    $0, %rdx
     div     %rcx
-    mov     %rax, %r11
+    movq    %rax, %r11
     dec     %r12
-    jne     .number_print_u32_loop
+    jne     .u_number_print_s64_loop
     movb    $CHAR_NEWLINE, (%r9)
     # print buffer
-    mov     $num, %rdi
-    call    stdout
+    movq    $num, %rdi
+    call    u_stdout
     ret
 
-number_read_u:
+u_number_read_u:
     mov     $0, %rax # accumulator
     mov     $0, %r10 # number of digit read
-    mov     $10, %r12 # multiplicator
-.number_read_u_loop:
-    mov     (%rdi), %rbx
-    movzb   (%rbx), %rbx
+    mov     $10, %r12 # digit multiplicator
+.u_number_read_u_loop:
+    movzb   (%rdi), %rbx
     cmpb    $CHAR_0, %bl
-    jl      .number_read_u_wrap_up
+    jl      .u_number_read_u_wrap_up
     cmpb    $CHAR_9, %bl
-    jg      .number_read_u_wrap_up
-    # shift previous number by one digit: x10
-    mul     %r12
+    jg      .u_number_read_u_wrap_up
+    mul     %r12 # shift previous number by one digit: x10
     sub     $CHAR_0, %bl
     add     %rbx, %rax
     inc     %r10
-    incq    (%rdi)
-    jmp     .number_read_u_loop
-.number_read_u_wrap_up:
+    incq    %rdi
+    jmp     .u_number_read_u_loop
+.u_number_read_u_wrap_up:
     cmp     $0, %r10
-    je      .number_read_u_error
+    je      .u_number_read_u_error
+    mov     %r10, %rbx # also return the number of digit read
     ret
-.number_read_u_error:
-    mov     $1, %rdi
-    call    exit_unset
-    ret
+.u_number_read_u_error:
+    mov     $EC_NUMBER_READ, %rdi
+    call    u_exit_ec
 
 sector_id_scan:
-    push    %rdi
-    call    number_read_u
-    pop     %rdi
-    movq    %rax, 48(%rdi)
+    call    u_number_read_u
     ret
 
 checksum_compute:
-    lea     16(%rdi), %r10 # char to check pointer
-    lea     56(%rdi), %r11 # checksum to write pointer
+    mov     %rdi, %r10 # char to check pointer
+    mov     %rsi, %r11 # checksum to write pointer
     mov     $-1, %rbx # char index
 .checksum_compute_char_candidate:
     inc     %rbx
@@ -172,11 +179,11 @@ checksum_compute:
 
 checksum_verify:
     mov     $-1, %rax
-    movq    (%rdi), %r10
+    movq    %rdi, %r10
     cmpb    $CHAR_BRACKET_OPEN, (%r10)
     jne     .checksum_verify_error
     inc     %r10
-    lea     56(%rdi), %r11
+    mov     %rsi, %r11
     mov     $0, %r12
 .checksum_verify_char_check:
     movzb   (%r10), %rbx
@@ -191,21 +198,19 @@ checksum_verify:
     jne     .checksum_verify_error
     mov     $0, %rax
 .checksum_verify_wrap_up:
-    addq    $2, (%rdi)
-    addq    $CHECKSUM_LENGTH, (%rdi)
     ret
 .checksum_verify_error:
-    mov     $4, %rdi
-    call    exit_unset
-    ret
+    mov     $EC_CHALLENGE_CHEKCSUM_VERIFY, %rdi
+    call    u_exit_ec
 
 challenge:
     # rdi: buffer to parse
     push    %rbp
     mov     %rsp, %rbp
-    sub     $64, %rsp
+    sub     $72, %rsp
     movq    %rdi, (%rsp) # buffer to read pointer
     movq    $0, 8(%rsp) # sum of the sector ids
+    movl    $0, 64(%rsp) # index within buffer
 .challenge_room_new:
     movq    $0, 16(%rsp) # a - h
     movq    $0, 24(%rsp) # i - p
@@ -213,18 +218,19 @@ challenge:
     movq    $0, 40(%rsp) # y - z + 2b of padding
     movq    $0, 48(%rsp) # sector id read
     movq    $0, 56(%rsp) # computed checksum + 3b of padding
-.challenge_line_new:
     # check eof
-    mov     (%rsp), %rax
-    movzb   (%rax), %rax
+    mov     (%rsp), %rdi
+    add     64(%rsp), %rdi
+    movzb   (%rdi), %rax
     cmp     $0, %rax
     je      .challenge_wrap_up
     # check new line
     cmp     $CHAR_NEWLINE, %rax
     je      .challenge_line_consume_new_line
 .challenge_char_new:
-    mov     (%rsp), %rax
-    movzb   (%rax), %rax
+    mov     (%rsp), %rdi
+    add     64(%rsp), %rdi
+    movzb   (%rdi), %rax
     cmp     $0, %rax
     # check dash
     cmp     $CHAR_DASH, %rax
@@ -237,39 +243,53 @@ challenge:
     # increase char count
     sub     $CHAR_A, %rax
     incb    16(%rsp, %rax)
-    incq    (%rsp) # consume char
+    incq    64(%rsp) # consume char
     jmp     .challenge_char_new
 .challenge_encrypted_name_end:
     # not a dash nor a char to count
-    movq    %rsp, %rdi
+    # get the input checkssum
+    movq    (%rsp), %rdi
+    add     64(%rsp), %rdi
     call    sector_id_scan
-    movq    %rsp, %rdi
+    mov     %rax, 48(%rsp)
+    add     %rbx, 64(%rsp)
+    # get the computed checksum
+    lea     16(%rsp), %rdi
+    lea     56(%rsp), %rsi
     call    checksum_compute
-    movq    %rsp, %rdi
+    # compare checksums
+    movq    (%rsp), %rdi
+    add     64(%rsp), %rdi
+    lea     56(%rsp), %rsi
     call    checksum_verify
+    addq    $CHECKSUM_LENGTH, 64(%rsp) # consume checksum
+    addq    $2, 64(%rsp) # consume brackets
     cmp     $0, %rax
     jne     .challenge_room_new
     movq    48(%rsp), %rax
     add     %rax, 8(%rsp)
     jmp     .challenge_room_new
 .challenge_consume_char:
-    incq    (%rsp)
+    incq    64(%rsp)
     jmp     .challenge_char_new
 .challenge_line_consume_new_line:
-    incq    (%rsp)
-    jmp     .challenge_line_new
+    incq    64(%rsp)
+    jmp     .challenge_room_new
 .challenge_wrap_up:
     movq    8(%rsp), %rdi
-    call    number_print_u32
+    call    u_number_print_s64
     mov     %rbp, %rsp
     pop     %rbp
     ret
 
-.global main
-main:
-    cmp     $2, %rdi
-    jne     exit_error
-    mov     8(%rsi), %rdi
+.global _start
+_start:
+    cmpl    $2, (%rsp)
+    jne     .start_error
+    mov     16(%rsp), %rdi
     call    challenge
-    mov     $0, %rax # success
-    ret
+    mov     $EC_SUCCESS, %rdi
+    call    u_exit_ec
+.start_error:
+    mov     $EC_CHALLENGE_ARGS, %rdi
+    call    u_exit_ec
